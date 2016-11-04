@@ -1,0 +1,161 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <meta http-equiv="X-UA-Compatible" content="chrome=1">
+    <title>Sky26 by wangfakang</title>
+
+    <link rel="stylesheet" href="stylesheets/styles.css">
+    <link rel="stylesheet" href="stylesheets/github-light.css">
+    <script src="javascripts/scale.fix.js"></script>
+    <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+    <!--[if lt IE 9]>
+    <script src="//html5shiv.googlecode.com/svn/trunk/html5.js"></script>
+    <![endif]-->
+  </head>
+  <body>
+    <div class="wrapper">
+      <header>
+        <h1 class="header">Sky26</h1>
+        <p class="header">one request and all worker accept</p>
+
+        <ul>
+          <li class="download"><a class="buttons" href="https://github.com/wangfakang/sky26/zipball/master">Download ZIP</a></li>
+          <li class="download"><a class="buttons" href="https://github.com/wangfakang/sky26/tarball/master">Download TAR</a></li>
+          <li><a class="buttons github" href="https://github.com/wangfakang/sky26">View On GitHub</a></li>
+        </ul>
+
+        <p class="header">This project is maintained by <a class="header name" href="https://github.com/wangfakang">wangfakang</a></p>
+
+
+      </header>
+      <section>
+        <p>nginx单个请求让多个worker同时接受处理：</p>
+
+<p>有个开源的patch<a href="https://github.com/arut/nginx-patches/blob/master/per-worker-listener">per-worker-listener</a>,这个patch可以使得每一个worker进程都可以进行监听端口；</p>
+
+<p>其实单个请求多个worker同时执行，可以使用子请求（ngx.location.capture）+反向代理(proxy_pass)来做（目前来看是最简单的一种方式）;</p>
+
+<p>简单列子：  </p>
+
+<div class="highlight highlight-source-c"><pre>
+worker_processess <span class="pl-k">auto</span>;
+
+events {
+    worker_connections  <span class="pl-c1">1024</span>;
+    accept_mutex off; #importent
+}
+
+
+http {
+
+    server {
+        listen <span class="pl-c1">80</span>;
+        listen       <span class="pl-c1">8010</span> per_worker; #importent
+        server_name  localhost;
+
+        #ngx.<span class="pl-smi">location</span>.<span class="pl-smi">capture</span>只可以内部location跳转
+        location /muti {
+           content_by_lua <span class="pl-s"><span class="pl-pds">'</span>  </span>
+<span class="pl-s">             local host = "127.0.0.1"</span>
+<span class="pl-s">             local port = 8010</span>
+<span class="pl-s">             local count = ngx.worker.count()</span>
+<span class="pl-s">             for i = 1 , count  do</span>
+<span class="pl-s">                 local res = ngx.location.capture("/internal?" .. "host=" .. host .. "&amp;port=" .. port)</span>
+<span class="pl-s">                 if res then</span>
+<span class="pl-s">                     ngx.say("status: ", res.status)</span>
+<span class="pl-s">                     ngx.say("body:")</span>
+<span class="pl-s">                     ngx.print(res.body)</span>
+<span class="pl-s">                 end</span>
+<span class="pl-s">                 port = port + 1</span>
+<span class="pl-s">            end</span>
+<span class="pl-s">         <span class="pl-pds">'</span></span>;
+        }
+
+        #利用proxy_pass进行发送http请求
+        location /internal {
+            proxy_pass http:<span class="pl-c">//$arg_host:$arg_port/showinfo;</span>
+        }
+
+        #每个worker将会执行此location
+        location /showinfo {
+            content_by_lua <span class="pl-s"><span class="pl-pds">'</span></span>
+<span class="pl-s">                ngx.say("pid: " .. ngx.var.pid .. ", port: " .. ngx.var.server_port .. "<span class="pl-cce">\t</span>")</span>
+<span class="pl-s">           <span class="pl-pds">'</span></span>;
+        }
+
+    }
+}
+</pre></div>
+
+<p>请求：<br>
+curl localhost:80/muti </p>
+
+<p>将会输出：  </p>
+
+<div class="highlight highlight-source-c"><pre>status: <span class="pl-c1">200</span>
+body:
+pid: <span class="pl-c1">4785</span>, port: <span class="pl-c1">8010</span>    
+status: <span class="pl-c1">200</span>
+body:
+pid: <span class="pl-c1">4786</span>, port: <span class="pl-c1">8011</span>   
+status: <span class="pl-c1">200</span>
+body:
+pid: <span class="pl-c1">4787</span>, port: <span class="pl-c1">8012</span>   
+status: <span class="pl-c1">200</span>
+body:
+pid: <span class="pl-c1">4788</span>, port: <span class="pl-c1">8013</span>   </pre></div>
+
+<p>从输出结果可以看到nginx的4个worker都执行了这个请求；  </p>
+
+<p>其实此时就可以利用这个机制进行nginx内部worker之间的通信（其实nginx内部是通过channel实现的worker之间的通信）
+其实也可以利用这个机制实现nginx集群的通信；</p>
+
+<pre><code>
+
+               M1                      M2
+
+          w1   w2   w3           w1    w2    w3
+
+                     nginx cluester
+
+</code></pre>
+
+<p>如上图所示，其中M1与M2是nginx cluster中的两个节点，M1与M2之间的worker之间可以使用http进行通讯；</p>
+
+<h1>
+<a id="欢迎一起交流学习-" class="anchor" href="#%E6%AC%A2%E8%BF%8E%E4%B8%80%E8%B5%B7%E4%BA%A4%E6%B5%81%E5%AD%A6%E4%B9%A0-" aria-hidden="true"><span aria-hidden="true" class="octicon octicon-link"></span></a>欢迎一起交流学习 </h1>
+
+<p>在使用中有任何问题，欢迎反馈给我，可以用以下联系方式跟我交流</p>
+
+<ul>
+<li>邮件(1031379296#qq.com, 把#换成@)</li>
+<li>QQ: 1031379296</li>
+<li>weibo: <a href="http://weibo.com/u/2786211992/home">@王发康</a>
+</li>
+</ul>
+
+<h1>
+<a id="thx" class="anchor" href="#thx" aria-hidden="true"><span aria-hidden="true" class="octicon octicon-link"></span></a>Thx</h1>
+
+<ul>
+<li>chunshengsterATgmail.com</li>
+</ul>
+
+<h1>
+<a id="author" class="anchor" href="#author" aria-hidden="true"><span aria-hidden="true" class="octicon octicon-link"></span></a>Author</h1>
+
+<ul>
+<li>Linux\nginx\golang\c\c++爱好者</li>
+<li>欢迎一起交流  一起学习# </li>
+<li>Others say good and Others good</li>
+</ul>
+      </section>
+      <footer>
+        <p><small>Hosted on <a href="https://pages.github.com">GitHub Pages</a> using the Dinky theme</small></p>
+      </footer>
+    </div>
+    <!--[if !IE]><script>fixScale(document);</script><![endif]-->
+		
+  </body>
+</html>
